@@ -7,7 +7,7 @@ This repository implements a pipeline for transfer learning using feature-based 
 
 | Filename                        | Description                                                                 |
 |--------------------------------|-----------------------------------------------------------------------------|
-| `1_dataload.py`                | Loads the Office-31 dataset from domain folders (Amazon, DSLR). |
+| `1_dataload.py`                | Loads the Office-31 dataset from domain folders (e.g., Amazon, Webcam, DSLR). |
 | `2_feat_extraction.py`         | Extracts features using a pre-trained ResNet model. Outputs `.npy` feature files. |
 | `3_corresponding_matrix.py`    | Computes source-target feature importance matrices using Random Forests.    |
 | `4_checking_matrix.py`         | Evaluates alignment (mean discrepancy, cosine similarity, KL-divergence).   |

@@ -6,11 +6,15 @@ from sklearn.metrics import classification_report, accuracy_score
 import joblib
 from scipy.stats import randint
 
-data = torch.load("extracted_features.pt")
-X_amazon = data["X_amazon_feats"]
-y_amazon = data["y_amazon"]
-X_dslr = data["X_dslr_feats"]
-y_dslr = data["y_dslr"]
+data = np.load("extracted_features_label_enc_feat_scl.npz")
+
+# Extract arrays
+X_amazon = data["X_src"]   # Source feature matrix
+y_amazon = data["y_src"]   # Source labels
+
+X_dslr = data["X_tgt"]   # Target feature matrix
+y_dslr = data["y_tgt"]
+
 
 # Step 1: Split into train and test
 X_target_train, X_target_test, y_target_train, y_target_test = train_test_split(
@@ -52,11 +56,14 @@ random_search = RandomizedSearchCV(
 random_search.fit(X_target_train, y_target_train)
 
 joblib.dump(random_search, "random_search_rf_dslr.pkl")
+le = joblib.load("label_encoder.pkl")
 
 # Step 5: Best model evaluation
 best_model = random_search.best_estimator_
 
 y_pred = best_model.predict(X_target_test)
+y_pred = le.inverse_transform(y_pred)
+y_target_test = le.inverse_transform(y_target_test)
 print("Best Hyperparameters:", random_search.best_params_)
 print("Validation Accuracy:", accuracy_score(y_target_test, y_pred))
 print("Classification Report:")
