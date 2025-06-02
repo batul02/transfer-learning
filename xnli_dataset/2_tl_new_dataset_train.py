@@ -19,7 +19,7 @@ target_matrices = []
 
 scaler = StandardScaler()
 X_source_scaled = scaler.fit_transform(X_en)
-X_target_scaled = scaler.fit_transform(X_fr)
+X_target_scaled = scaler.transform(X_fr)
 
 # scaler = StandardScaler()
 # X_combined = np.vstack((X_en, X_fr))

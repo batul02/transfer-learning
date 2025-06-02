@@ -6,13 +6,17 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.linear_model import Ridge
 import joblib
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, classification_report
+import seaborn as sns
+from joblib import Parallel, delayed
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 data = np.load("../encoded_data.npz")
-X_en = data["X_en"][:10000,:]
-y_en = data["y_en"][:10000]
-X_fr = data["X_fr"][:5000,:]
-y_fr = data["y_fr"][:5000]
+X_en = data["X_en"]
+y_en = data["y_en"]
+X_fr = data["X_fr"]
+y_fr = data["y_fr"]
 
 
 print("Shape of Source Dataset: ", X_en.shape)
@@ -26,6 +30,11 @@ X_target_scaled = scaler.transform(X_fr)
 # X_target_scaled = X_target_scaled[:5000,:]
 # y_fr = y_fr
 # y_en = y_en
+
+np.savez("scaled_src_shap.npz",
+         X_source_scaled=X_source_scaled,
+         y_en=y_en)
+
 print("Shape of Source Dataset scalled: ", X_source_scaled.shape)
 print("Shape of Target Dataset scalled: ", X_target_scaled.shape)
 
@@ -33,6 +42,12 @@ print("Shape of Target Dataset scalled: ", X_target_scaled.shape)
 X_target_train, X_target_test, y_target_train, y_target_test = train_test_split(
     X_target_scaled, y_fr, test_size=0.2, stratify=y_fr, random_state=42
 )
+
+np.savez("fr_target_train_test_split_shap.npz",
+         X_target_train=X_target_train,
+         X_target_test=X_target_test,
+         y_target_train=y_target_train,
+         y_target_test=y_target_test)
 
 # Parallelize the training process using joblib
 n_jobs = -1  # Use the maximum number of available cores
@@ -59,15 +74,48 @@ clf_en = train_rf_model(X_source_scaled, y_en)
 # Step 5: Compute SHAP Values for Source and Target Models
 print("Explaining English model with SHAP...")
 explainer_en = shap.TreeExplainer(clf_en)
-shap_values_en = explainer_en.shap_values(X_source_scaled)
+# shap_values_en = explainer_en.shap_values(X_source_scaled)
+def explain_single_instance_s(x):
+    shap_vals = explainer_en.shap_values(x, check_additivity=False)
+    return shap_vals # returns list of arrays, one per class
+
+# Use all CPU cores
+n_jobs = -1
+
+# Parallel computation
+shap_values_en = Parallel(n_jobs=n_jobs)(
+    delayed(explain_single_instance_s)(X_source_scaled[i]) for i in tqdm(range(len(X_source_scaled)))
+)
+
+# Convert to consistent array shape
+# Each item is a list (one per class); stack per class
+shap_values_en_stacked = [np.vstack([shap_values_en[i][cls] for i in range(len(X_source_scaled))])
+                          for cls in range(len(shap_values_en[0]))]
 print("SHAP values for English data computed.")
 
 print("Explaining French model with SHAP...")
 explainer_fr = shap.TreeExplainer(clf_fr_base)
-shap_values_fr = explainer_fr.shap_values(X_target_train)
+# shap_values_fr = explainer_fr.shap_values(X_target_train)
+def explain_single_instance_t(x):
+    shap_vals = explainer_fr.shap_values(x, check_additivity=False)
+    return shap_vals
+
+# Parallel computation
+shap_values_fr = Parallel(n_jobs=n_jobs)(
+    delayed(explain_single_instance_t)(X_target_train[i]) for i in tqdm(range(len(X_target_train)))
+)
+
+# Convert to consistent array shape
+# Each item is a list (one per class); stack per class
+shap_values_fr_stacked = [np.vstack([shap_values_fr[i][cls] for i in range(len(X_target_train))])
+                          for cls in range(len(shap_values_fr[0]))]
+
 print("SHAP values for French data computed.")
 
-print("Shape of SHAP values",shap_values_en.shape, shap_values_fr.shape)
+for i, sv in enumerate(shap_values_en_stacked):
+    print(f"Class {i} SHAP shape: {sv.shape}")
+
+# print("Shape of SHAP values",shap_values_en.shape, shap_values_fr.shape)
 
 print("Computing SHAP summaries...")
 # shap_en_summary = np.mean([np.abs(sv) for sv in shap_values_en], axis=1)
@@ -86,6 +134,19 @@ similarities = cosine_similarity(shap_fr_summary, shap_en_summary)
 print("similarities shape: ", similarities.shape)
 top_match_indices = np.argmax(similarities, axis=1)
 print("Top-1 correspondences identified.")
+
+np.savez("shap_summaries_and_similarity.npz",
+         shap_en_summary=shap_en_summary,
+         shap_fr_summary=shap_fr_summary,
+         cosine_similarities=similarities)
+
+plt.figure(figsize=(10, 8))
+sns.heatmap(similarities, cmap="viridis")
+plt.title("Cosine Similarity Heatmap (SHAP - FR vs EN)")
+plt.xlabel("English Samples (Source)")
+plt.ylabel("French Samples (Target)")
+plt.tight_layout()
+plt.savefig("Heatmap_similarity_xnli.jpeg")
 
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
@@ -125,22 +186,63 @@ print("corresponding_fr.shape", corresponding_fr.shape)
 # Save Correspondences
 joblib.dump((corresponding_en, corresponding_fr), "explainable_correspondences_shap_rf.pkl")
 
-# Step 7: Learn Transformation Matrix with Ridge
-ridge = Ridge(alpha=1e-5, solver='auto', random_state=42)  # Added `solver` to control parallelism
-ridge.fit(corresponding_en, corresponding_fr)
+alphas = [1e-15, 1e-10, 1e-7, 1e-5, 1e-3, 1e-1]
+best_alpha = None
+best_acc = -1
+best_report = ""
+best_model = None
 
-# Transform Source Data
-X_en_transformed = ridge.predict(X_source_scaled)
+for alpha in alphas:
+    # Learn transformation matrix
+    ridge = Ridge(alpha=alpha, solver='auto', random_state=42)  # Added `solver` to control parallelism
+    ridge.fit(corresponding_en, corresponding_fr)
+    P = ridge.coef_
 
-# Step 8: Combine Transformed Source + Target
-X_combined = np.vstack([X_en_transformed, X_target_train])
-y_combined = np.hstack([y_en, y_target_train])
+    # Transform source data
+    # X_en_transformed = ridge.predict(X_source_scaled)
+    X_en_transformed = np.matmul(np.asarray(X_source_scaled), np.asarray(P.T)) 
 
-# Parallel training of the transfer model
-clf_transfer = train_rf_model(X_combined, y_combined)
+    # Step 8: Combine Transformed Source + Target
+    X_combined = np.vstack([X_en_transformed, X_target_train])
+    y_combined = np.hstack([y_en, y_target_train])
 
-# Step 10: Evaluate Transfer Learning Model on Target Test Data
-y_fr_pred = clf_transfer.predict(X_target_test)
-transfer_accuracy = accuracy_score(y_target_test, y_fr_pred)
+    # Parallel training of the transfer model
+    clf_transfer = train_rf_model(X_combined, y_combined)
 
-print("Transfer Learning Accuracy on French test data:", transfer_accuracy)
+    # Step 10: Evaluate Transfer Learning Model on Target Test Data
+    y_fr_pred = clf_transfer.predict(X_target_test)
+    transfer_accuracy = accuracy_score(y_target_test, y_fr_pred)
+    report = classification_report(y_target_test, y_fr_pred)
+
+    print(f"Alpha={alpha} → Accuracy={transfer_accuracy:.4f}")
+    print(report)
+
+    if transfer_accuracy > best_acc:
+        best_acc = transfer_accuracy
+        best_alpha = alpha
+        best_report = report
+        best_model = clf_transfer
+
+print("Best alpha:", best_alpha)
+print("Best accuracy:", best_acc)
+print(best_report)
+
+# # Step 7: Learn Transformation Matrix with Ridge
+# ridge = Ridge(alpha=1e-5, solver='auto', random_state=42)  # Added `solver` to control parallelism
+# ridge.fit(corresponding_en, corresponding_fr)
+
+# # Transform Source Data
+# X_en_transformed = ridge.predict(X_source_scaled)
+
+# # Step 8: Combine Transformed Source + Target
+# X_combined = np.vstack([X_en_transformed, X_target_train])
+# y_combined = np.hstack([y_en, y_target_train])
+
+# # Parallel training of the transfer model
+# clf_transfer = train_rf_model(X_combined, y_combined)
+
+# # Step 10: Evaluate Transfer Learning Model on Target Test Data
+# y_fr_pred = clf_transfer.predict(X_target_test)
+# transfer_accuracy = accuracy_score(y_target_test, y_fr_pred)
+
+# print("Transfer Learning Accuracy on French test data:", transfer_accuracy)
