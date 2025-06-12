@@ -45,8 +45,3 @@ Across all datasets, the framework shows accuracy improvements over baseline tra
 * Python 3.8+
 * `scikit-learn`, `shap`, `lime`, `librosa`, `torch`, `transformers`
 
-## Citation
-
-```
-Mankada Batul Abbas. "TRANSFORM-X: Transfer via Feature Correspondence and Explanations." M.Tech Dissertation, Mahindra University, 2025.
-```
